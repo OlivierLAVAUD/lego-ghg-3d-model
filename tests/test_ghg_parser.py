@@ -37,8 +37,8 @@ class ParserSamplesTest(unittest.TestCase):
             {
                 "vertex_buffers": 1,
                 "draws": 8,
-                "vertices": 920,
-                "faces": 1418,
+                "vertices": 924,
+                "faces": 1434,
                 "textures": 2,
                 "geometry_offset": "0x006514",
                 "bounds": [[-0.1524, -0.0007, -0.2637], [0.1524, 0.3441, 0.2858]],
@@ -50,14 +50,61 @@ class ParserSamplesTest(unittest.TestCase):
             "biplane_pc.ghg",
             {
                 "vertex_buffers": 2,
-                "draws": 44,
-                "vertices": 4757,
-                "faces": 7183,
+                "draws": 48,
+                "vertices": 4766,
+                "faces": 7230,
                 "textures": 24,
                 "geometry_offset": "0x037074",
                 "bounds": [[-0.4572, -0.3658, -0.8382], [1.2192, 0.3962, 0.8382]],
             },
         )
+
+    def test_biplane_missing_surfaces_recovered(self):
+        model = load("biplane_pc.ghg")
+        self.assertEqual(len(model.draws), 48)
+        self.assertEqual(len(model.skeleton_parts), 48)
+        self.assertFalse(
+            any("mapping partiel" in warning for warning in model.warnings)
+        )
+
+        vertices = np.asarray(model.vertices)
+        faces = np.asarray(model.faces)
+
+        def has_face(predicate):
+            return any(predicate(vertices[face]) for face in faces)
+
+        def left_float_bottom(points):
+            return (
+                np.all(np.abs(points[:, 1] + 0.3353) < 2e-3)
+                and np.all(points[:, 2] > 0.22)
+                and np.all(points[:, 2] < 0.39)
+                and np.all(points[:, 0] > -0.39)
+                and np.all(points[:, 0] < 0.39)
+            )
+
+        def left_float_end(points):
+            return (
+                np.all(np.abs(points[:, 0] + 0.381) < 2e-3)
+                and np.all(points[:, 1] > -0.34)
+                and np.all(points[:, 1] < -0.30)
+                and np.all(points[:, 2] > 0.22)
+                and np.all(points[:, 2] < 0.39)
+            )
+
+        def right_aileron_underside(points):
+            return (
+                np.all(np.abs(points[:, 1] - 0.1829) < 2e-3)
+                and np.all(points[:, 2] < -0.07)
+                and np.all(points[:, 2] > -0.39)
+                and np.all(np.abs(points[:, 0]) < 0.08)
+            )
+
+        self.assertTrue(has_face(left_float_bottom))
+        self.assertTrue(has_face(left_float_end))
+        self.assertTrue(has_face(right_aileron_underside))
+
+        # The cargo-box top is intentionally open in the source data: the
+        # crate has a clean 18-edge rim at y=0 and no top face.
 
     def test_indianajones(self):
         self.check_model(
@@ -65,8 +112,8 @@ class ParserSamplesTest(unittest.TestCase):
             {
                 "vertex_buffers": 3,
                 "draws": 19,
-                "vertices": 4605,
-                "faces": 8752,
+                "vertices": 4602,
+                "faces": 8780,
                 "textures": 4,
                 "geometry_offset": "0x17C784",
                 "bounds": [[-0.1187, -0.0001, -0.0887], [0.1187, 0.4056, 0.0590]],

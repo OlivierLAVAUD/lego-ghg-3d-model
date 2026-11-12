@@ -802,8 +802,34 @@ class GHGModel:
 
         valid = [records[pos] for pos in sorted(records)]
         if expected_parts and len(valid) == expected_parts:
-            return valid
-        return max(runs, key=lambda run: sum(rec["index_count"] for rec in run))
+            result = valid
+        else:
+            result = max(runs, key=lambda run: sum(rec["index_count"] for rec in run))
+        self._extend_strip_gaps(result, index_total, valid)
+        return result
+
+    def _extend_strip_gaps(self, records, index_total, all_records):
+        """Inclure les indices de fin de strip dans index_count.
+
+        Le champ index_count s'arrete avant les 2 a 6 indices qui precedent le
+        draw suivant. Ces indices contiennent les derniers triangles du strip.
+        """
+        starts = sorted(record["ib_offset"] for record in all_records)
+        for record in sorted(records, key=lambda rec: rec["ib_offset"]):
+            end = record["ib_offset"] + record["index_count"]
+            next_start = index_total
+            for start in starts:
+                if start > end:
+                    next_start = start
+                    break
+            gap = next_start - end
+            if 0 < gap <= 8:
+                record["index_count"] += gap
+            elif gap > 8:
+                self.warnings.append(
+                    f"DISP: ecart de {gap} indices apres le draw a "
+                    f"{record['ib_offset']} ignore."
+                )
 
     @staticmethod
     def _pick_vertex_buffer(blocks, record):
