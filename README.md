@@ -3,6 +3,12 @@
 Application interactive pour analyser, visualiser en 3D et exporter les modeles `.ghg` / `NU20`
 des jeux LEGO developpes par TT Games (LEGO Indiana Jones, LEGO Star Wars, LEGO Batman, etc.).
 
+## Apercu
+
+![Apercu de l'interface LEGO GHG 3D Explorer](assets/image.png)
+
+*Visualisation du biplan, textures DDS extraites et exports disponibles.*
+
 ## Fonctionnalites
 
 - Visualisation 3D WebGL via `gr.Model3D` (rotation, pan, zoom).
@@ -71,5 +77,6 @@ trois echantillons du depot.
 - `app.py` : interface Gradio, galerie de textures, tableaux de chunks/draws et exports.
 - `ghg_parser.py` : parseur `GHGModel`, extraction des chunks, textures et geometrie.
 - `tests/test_ghg_parser.py` : tests de non-regression sur les trois echantillons.
+- `assets/` : images de demonstration utilisees par le README.
 - `exports/` : sorties generees (ignorees par git).
 - `instruct.md` : notes techniques detaillees sur le format et l'architecture.
