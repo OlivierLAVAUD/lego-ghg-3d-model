@@ -1,0 +1,15 @@
+[project]
+name = "lego-ghg-explorer"
+version = "1.0.0"
+description = "Parse, inspect, visualize and export LEGO NU20 (.ghg) models"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "gradio>=6.31.0",
+    "numpy>=2.5.4",
+    "pillow>=12.3.0",
+    "trimesh>=5.2.0",
+]
+
+[project.scripts]
+ghg-explorer = "app:main"
