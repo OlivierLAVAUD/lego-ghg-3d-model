@@ -49,6 +49,9 @@ Le parseur lit d'abord la chaine lineaire, puis complete avec les tags connus tr
   MS00 et `alphaMode = BLEND` lorsque la texture contient de la transparence.
 - trimesh inverse l'axe V lors de l'export glTF : les UV sont pre-flippes avant
   `TextureVisuals` pour conserver l'orientation des textures DDS dans le GLB.
+- L'export OBJ ecrit un groupe et un `usemtl` par materiau, avec des indices `v/vt` remappes
+  par groupe. Le MTL reprend `Kd`, `d`, `map_Kd` et `map_d`, et les textures PNG utilisees sont
+  copiees a cote du fichier. L'UI livre l'ensemble OBJ + MTL + textures dans un ZIP.
 
 ## 3. Section geometrie
 
@@ -202,8 +205,9 @@ parasite est ignore car le total ne correspond pas aux 8 parties GSNH.
   - `_build_textured_scene()` : un `trimesh.Trimesh` par materiau avec UVs et texture ;
   - `_build_stats()` : statistiques pour l'UI ;
   - `export_glb()`, `export_obj()`, `export_textures_zip()`.
-- `app.py` : interface Gradio, tableaux chunks/draws, galerie de textures, exports.
-- `tests/test_ghg_parser.py` : tests de non-regression.
+- `app.py` : interface Gradio, tableaux chunks/draws/materiaux, apercus UV, galerie de
+  textures, exports GLB et OBJ+MTL.
+- `tests/test_ghg_parser.py` : tests de non-regression, dont les exports GLB et OBJ textures.
 
 ## 9. Limites et pistes
 

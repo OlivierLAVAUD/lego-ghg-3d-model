@@ -5,8 +5,11 @@ Visualiseur WebGL (Three.js via Model3D), galerie de textures, inspection des ch
 
 import glob
 import os
+import zipfile
 
 import gradio as gr
+import numpy as np
+from PIL import Image, ImageDraw
 
 from ghg_parser import GHGModel
 
@@ -20,8 +23,101 @@ def list_workspace_ghg_files():
     return sorted(os.path.basename(path) for path in files)
 
 
+def _export_arrays(model):
+    return (
+        getattr(model, "_export_vertices", model.vertices),
+        getattr(model, "_export_faces", model.faces),
+        getattr(model, "_export_uvs", model.uvs),
+        getattr(model, "_export_face_materials", model.face_materials),
+    )
+
+
+def build_material_rows(model):
+    vertices, faces, uvs, face_materials = _export_arrays(model)
+    rows = []
+    for material in model.materials:
+        index = material.get("index", -1)
+        face_indices = np.where(face_materials == index)[0]
+        uv_min = "-"
+        uv_max = "-"
+        if len(face_indices) and len(uvs) == len(vertices):
+            used = np.unique(faces[face_indices])
+            if len(used):
+                material_uvs = uvs[used]
+                uv_min = "({:.3f}, {:.3f})".format(*material_uvs.min(axis=0))
+                uv_max = "({:.3f}, {:.3f})".format(*material_uvs.max(axis=0))
+
+        texture_index = material.get("texture", -1)
+        texture_label = "-"
+        if 0 <= texture_index < len(model.textures):
+            texture = model.textures[texture_index]
+            texture_label = (
+                f"#{texture_index} {texture['width']}x{texture['height']}"
+            )
+
+        diffuse = material.get("diffuse", (1.0, 1.0, 1.0, 1.0))
+        diffuse_label = ", ".join(f"{channel:.3f}" for channel in diffuse[:3])
+        alpha = diffuse[3] if len(diffuse) > 3 else 1.0
+        if alpha <= 0.0:
+            alpha = 1.0
+        rows.append([
+            index,
+            material.get("id", -1),
+            texture_label,
+            diffuse_label,
+            float(alpha),
+            len(face_indices),
+            uv_min,
+            uv_max,
+        ])
+    return rows
+
+
+def build_uv_previews(model):
+    vertices, faces, uvs, face_materials = _export_arrays(model)
+    if len(uvs) != len(vertices):
+        return []
+    items = []
+    for material in model.materials:
+        index = material.get("index", -1)
+        face_indices = np.where(face_materials == index)[0]
+        if len(face_indices) == 0:
+            continue
+
+        texture_index = material.get("texture", -1)
+        image = None
+        if 0 <= texture_index < len(model.textures):
+            image = model.textures[texture_index].get("image")
+
+        if image is not None:
+            canvas = image.convert("RGBA").copy()
+            canvas.thumbnail((512, 512), Image.Resampling.LANCZOS)
+        else:
+            canvas = Image.new("RGBA", (512, 512), (40, 42, 52, 255))
+
+        width, height = canvas.size
+        draw = ImageDraw.Draw(canvas, "RGBA")
+        used = np.unique(faces[face_indices])
+        remap = {int(vertex): position for position, vertex in enumerate(used)}
+        group_uvs = uvs[used]
+        line_color = (255, 70, 70, 210) if image is not None else (255, 200, 60, 220)
+
+        for face in faces[face_indices]:
+            points = []
+            for vertex in face:
+                u, v = group_uvs[remap[int(vertex)]]
+                points.append((float(u) * width, float(v) * height))
+            draw.line(points + [points[0]], fill=line_color, width=1)
+
+        caption = f"Mat {index} - {len(face_indices)} faces"
+        if texture_index >= 0:
+            caption += f" - Tex #{texture_index}"
+        items.append((canvas, caption))
+    return items
+
+
 def _empty_result(message):
-    return None, message, [], [], [], "", None, None, None
+    return None, message, [], [], [], "", None, None, None, [], []
 
 
 def load_and_process_model(selected_file, uploaded_file):
@@ -39,12 +135,16 @@ def load_and_process_model(selected_file, uploaded_file):
         base_name = model.name
 
         glb_path = None
-        obj_path = None
+        obj_zip_path = None
         if model.mesh is not None:
             glb_path = os.path.join(EXPORTS_DIR, f"{base_name}.glb")
             model.export_glb(glb_path)
             obj_path = os.path.join(EXPORTS_DIR, f"{base_name}.obj")
-            model.export_obj(obj_path)
+            obj_files = model.export_obj(obj_path)
+            obj_zip_path = os.path.join(EXPORTS_DIR, f"{base_name}_obj.zip")
+            with zipfile.ZipFile(obj_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for obj_file in obj_files:
+                    zf.write(obj_file, arcname=os.path.basename(obj_file))
 
         zip_path = os.path.join(EXPORTS_DIR, f"{base_name}_textures.zip")
         model.export_textures_zip(zip_path)
@@ -73,6 +173,7 @@ def load_and_process_model(selected_file, uploaded_file):
 * **Triangles :** `{stats['num_faces']:,}`
 * **Sous-maillages (draws) :** `{stats['num_draws']}`
 * **Vertex buffers :** `{stats['num_vertex_buffers']}`
+* **Materiaux :** `{len(model.materials)}`
 * **Textures extraites :** `{stats['num_textures']}`
 * **Entrees NTBL :** `{stats['ntbl_count']}`
 * **Section geometrie :** `{stats['geometry_offset']}`
@@ -102,9 +203,14 @@ def load_and_process_model(selected_file, uploaded_file):
                 draw["index_count"],
                 draw["triangles"],
                 draw["stored_normal_dot"],
+                draw.get("material", -1),
+                draw.get("texture", -1),
             ]
             for draw in model.draws
         ]
+
+        material_rows = build_material_rows(model)
+        uv_previews = build_uv_previews(model)
 
         ntbl_text = " - ".join(model.ntbl_strings) if model.ntbl_strings else "Aucun nom extrait."
 
@@ -116,8 +222,10 @@ def load_and_process_model(selected_file, uploaded_file):
             draw_rows,
             ntbl_text,
             glb_path,
-            obj_path,
+            obj_zip_path,
             zip_path,
+            material_rows,
+            uv_previews,
         )
 
     except Exception as exc:
@@ -164,7 +272,9 @@ with gr.Blocks(title="LEGO GHG 3D Explorer") as demo:
             )
             with gr.Row():
                 download_glb = gr.File(label="Telecharger .GLB", interactive=False)
-                download_obj = gr.File(label="Telecharger .OBJ", interactive=False)
+                download_obj = gr.File(
+                    label="Telecharger .OBJ + MTL (.ZIP)", interactive=False
+                )
                 download_tex = gr.File(label="Textures (.ZIP)", interactive=False)
 
         with gr.Column(scale=5):
@@ -183,6 +293,40 @@ with gr.Blocks(title="LEGO GHG 3D Explorer") as demo:
                         object_fit="contain",
                     )
 
+                with gr.TabItem("Materiaux / UV"):
+                    materials_table = gr.Dataframe(
+                        headers=[
+                            "Materiau",
+                            "ID",
+                            "Texture",
+                            "Diffuse RVB",
+                            "Alpha",
+                            "Faces",
+                            "UV min",
+                            "UV max",
+                        ],
+                        datatype=[
+                            "number",
+                            "number",
+                            "str",
+                            "str",
+                            "number",
+                            "number",
+                            "str",
+                            "str",
+                        ],
+                        label="Materiaux, textures et emprise UV",
+                        interactive=False,
+                        wrap=True,
+                    )
+                    uv_gallery = gr.Gallery(
+                        label="Apercu des UV projetes sur chaque texture",
+                        columns=2,
+                        rows=2,
+                        height=380,
+                        object_fit="contain",
+                    )
+
                 with gr.TabItem("Sous-maillages"):
                     draws_table = gr.Dataframe(
                         headers=[
@@ -194,8 +338,10 @@ with gr.Blocks(title="LEGO GHG 3D Explorer") as demo:
                             "Indices",
                             "Triangles",
                             "Dot normales",
+                            "Materiau",
+                            "Texture",
                         ],
-                        datatype=["number"] * 8,
+                        datatype=["number"] * 10,
                         label="Draws extraits de DISP",
                         interactive=False,
                     )
@@ -225,6 +371,8 @@ with gr.Blocks(title="LEGO GHG 3D Explorer") as demo:
         download_glb,
         download_obj,
         download_tex,
+        materials_table,
+        uv_gallery,
     ]
 
     btn_load.click(fn=load_and_process_model, inputs=[file_dropdown, file_upload], outputs=outputs)

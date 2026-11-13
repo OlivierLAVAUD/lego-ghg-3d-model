@@ -277,6 +277,48 @@ class ParserSamplesTest(unittest.TestCase):
             self.assertEqual(len(gltf["images"]), expected_images)
             self.assertEqual(len(gltf["textures"]), expected_images)
 
+    def test_textured_obj_export(self):
+        model = load("indianajones_dj_pc.ghg")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "indy.obj")
+            files = model.export_obj(path)
+
+            self.assertTrue(os.path.exists(path))
+            mtl_path = os.path.join(tmp, "indy.mtl")
+            self.assertIn(mtl_path, files)
+            texture_files = [file for file in files if file.endswith(".png")]
+            self.assertEqual(len(texture_files), 3)
+            for texture_file in texture_files:
+                self.assertTrue(os.path.exists(texture_file))
+
+            with open(path, "r", encoding="utf-8") as handle:
+                obj_text = handle.read()
+            with open(mtl_path, "r", encoding="utf-8") as handle:
+                mtl_text = handle.read()
+
+            self.assertIn("mtllib indy.mtl", obj_text)
+            self.assertEqual(obj_text.count("\nusemtl "), 7)
+            self.assertIn("usemtl mat_00", obj_text)
+            self.assertIn("usemtl mat_06", obj_text)
+            self.assertGreater(obj_text.count("\nvt "), 0)
+            self.assertGreater(obj_text.count("\nf "), 0)
+
+            self.assertEqual(mtl_text.count("newmtl "), 7)
+            self.assertIn("map_Kd texture_00.png", mtl_text)
+            self.assertIn("map_Kd texture_02.png", mtl_text)
+            self.assertIn("map_Kd texture_03.png", mtl_text)
+
+    def test_untextured_obj_export(self):
+        model = load("scooter_pc.ghg")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "scooter.obj")
+            files = model.export_obj(path)
+            self.assertEqual(len(files), 2)
+            with open(os.path.join(tmp, "scooter.mtl"), "r", encoding="utf-8") as handle:
+                mtl_text = handle.read()
+            self.assertNotIn("map_Kd", mtl_text)
+            self.assertEqual(mtl_text.count("newmtl "), 6)
+
 
 if __name__ == "__main__":
     unittest.main()

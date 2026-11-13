@@ -1324,12 +1324,134 @@ class GHGModel:
         else:
             self.mesh.export(path)
 
+    @staticmethod
+    def _obj_material_name(material_index):
+        return f"mat_{material_index:02d}" if material_index >= 0 else "untextured"
+
     def export_obj(self, path):
-        """Exporter le modele au format OBJ."""
+        """Exporter le modele en OBJ + MTL avec les textures PNG associees."""
         self._build_mesh()
-        if self.mesh is None:
+        vertices = getattr(self, "_export_vertices", self.vertices)
+        faces = getattr(self, "_export_faces", self.faces)
+        uvs = getattr(self, "_export_uvs", self.uvs)
+        face_materials = getattr(self, "_export_face_materials", self.face_materials)
+
+        if len(vertices) == 0 or len(faces) == 0:
             raise ValueError("Aucun maillage a exporter.")
-        self.mesh.export(path)
+
+        if len(face_materials) != len(faces):
+            face_materials = np.full(len(faces), -1, dtype=np.int32)
+
+        base_path, extension = os.path.splitext(path)
+        if not extension:
+            base_path = path
+            path = path + ".obj"
+        mtl_path = base_path + ".mtl"
+        obj_name = os.path.basename(path)
+        mtl_name = os.path.basename(mtl_path)
+        directory = os.path.dirname(os.path.abspath(path))
+        os.makedirs(directory, exist_ok=True)
+
+        groups = {}
+        for face_index, material_index in enumerate(face_materials):
+            groups.setdefault(int(material_index), []).append(face_index)
+
+        texture_files = {}
+        mtl_lines = [f"# MTL genere depuis {obj_name}", ""]
+        obj_lines = [
+            f"# OBJ genere depuis {self.name}",
+            f"mtllib {mtl_name}",
+            "",
+        ]
+
+        vertex_offset = 1
+        uv_offset = 1
+        for material_index in sorted(groups):
+            face_indices = np.asarray(groups[material_index], dtype=np.int64)
+            group_faces = faces[face_indices]
+            used = np.unique(group_faces)
+            remap = np.full(len(vertices), -1, dtype=np.int64)
+            remap[used] = np.arange(len(used))
+
+            material = self._material_for_index(material_index)
+            material_name = self._obj_material_name(material_index)
+            texture_index = material.get("texture", -1) if material else -1
+            texture_name = None
+            if 0 <= texture_index < len(self.textures):
+                texture = self.textures[texture_index]
+                if texture.get("image") is not None:
+                    if texture_index not in texture_files:
+                        texture_name = f"texture_{texture_index:02d}.png"
+                        texture_path = os.path.join(directory, texture_name)
+                        texture["image"].save(texture_path, format="PNG")
+                        texture_files[texture_index] = texture_path
+                    else:
+                        texture_name = os.path.basename(texture_files[texture_index])
+
+            diffuse = material.get("diffuse", (1.0, 1.0, 1.0, 1.0)) if material else (1.0, 1.0, 1.0, 1.0)
+            color = [float(np.clip(channel, 0.0, 1.0)) for channel in diffuse[:3]]
+            alpha = float(diffuse[3]) if len(diffuse) > 3 else 1.0
+            if alpha <= 0.0:
+                alpha = 1.0
+
+            mtl_lines.extend([
+                f"newmtl {material_name}",
+                "Ka 0.000000 0.000000 0.000000",
+                f"Kd {color[0]:.6f} {color[1]:.6f} {color[2]:.6f}",
+                "Ks 0.000000 0.000000 0.000000",
+                "illum 2",
+            ])
+            if alpha < 1.0:
+                mtl_lines.append(f"d {alpha:.6f}")
+            if texture_name:
+                mtl_lines.append(f"map_Kd {texture_name}")
+                image = self.textures[texture_index]["image"]
+                if image.getchannel("A").getextrema()[0] < 255:
+                    mtl_lines.append(f"map_d {texture_name}")
+            mtl_lines.append("")
+
+            for vertex_index in used:
+                position = vertices[vertex_index]
+                obj_lines.append(
+                    f"v {position[0]:.6f} {position[1]:.6f} {position[2]:.6f}"
+                )
+            has_uvs = len(uvs) == len(vertices)
+            if has_uvs:
+                for vertex_index in used:
+                    uv = uvs[vertex_index]
+                    obj_lines.append(f"vt {uv[0]:.6f} {uv[1]:.6f}")
+
+            obj_lines.extend([
+                f"g {material_name}",
+                f"usemtl {material_name}",
+            ])
+            for face in group_faces:
+                indices = remap[face]
+                if has_uvs:
+                    f1 = indices[0] + vertex_offset
+                    f2 = indices[1] + vertex_offset
+                    f3 = indices[2] + vertex_offset
+                    obj_lines.append(
+                        f"f {f1}/{indices[0] + uv_offset} "
+                        f"{f2}/{indices[1] + uv_offset} "
+                        f"{f3}/{indices[2] + uv_offset}"
+                    )
+                else:
+                    f1 = indices[0] + vertex_offset
+                    f2 = indices[1] + vertex_offset
+                    f3 = indices[2] + vertex_offset
+                    obj_lines.append(f"f {f1} {f2} {f3}")
+            obj_lines.append("")
+            vertex_offset += len(used)
+            if has_uvs:
+                uv_offset += len(used)
+
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("\n".join(obj_lines))
+        with open(mtl_path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("\n".join(mtl_lines))
+
+        return [path, mtl_path, *texture_files.values()]
 
     def export_textures_zip(self, path):
         """Exporter les textures decodees dans un fichier ZIP (PNG)."""

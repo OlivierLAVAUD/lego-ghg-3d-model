@@ -14,9 +14,10 @@ des jeux LEGO developpes par TT Games (LEGO Indiana Jones, LEGO Star Wars, LEGO 
 - Visualisation 3D WebGL via `gr.Model3D` (rotation, pan, zoom).
 - Chargement des modeles inclus ou import d'un fichier `.ghg` / `.bin`.
 - Extraction des textures DDS (DXT1/DXT5) en PNG et export ZIP.
-- Export des maillages en `.glb` (glTF 2.0 binaire) et `.obj`.
+- Export des maillages en `.glb` (glTF 2.0 binaire) et en `.obj` + `.mtl` avec textures PNG.
 - GLB textures : materiaux MS00, couleurs diffuses, UVs, alpha et images DDS integrees.
-- Inspection des chunks binaires, des noms NTBL et des sous-maillages (draws).
+- OBJ textures : un groupe et un materiau MTL par materiau MS00, textures PNG copiees dans le ZIP.
+- Inspection des chunks binaires, des noms NTBL, des sous-maillages (draws), des materiaux et des UV.
 - Reconstruction des sous-maillages a partir des enregistrements DISP et des vertex/index buffers.
 
 ## Installation
@@ -43,7 +44,7 @@ uv run python -m unittest discover -s tests -v
 ```
 
 Les tests verifient les statistiques, les bornes, la coherence des normales, le mapping
-materiau/texture et l'export GLB texture des trois echantillons du depot.
+materiau/texture et les exports GLB/OBJ textures des trois echantillons du depot.
 
 ## Format NU20 / GHG (resume)
 
@@ -78,7 +79,7 @@ materiau/texture et l'export GLB texture des trois echantillons du depot.
 
 ## Structure
 
-- `app.py` : interface Gradio, galerie de textures, tableaux de chunks/draws et exports.
+- `app.py` : interface Gradio, galerie de textures, tableaux chunks/draws/materiaux, apercus UV et exports.
 - `ghg_parser.py` : parseur `GHGModel`, extraction des chunks, textures et geometrie.
 - `tests/test_ghg_parser.py` : tests de non-regression sur les trois echantillons.
 - `assets/` : images de demonstration utilisees par le README.
