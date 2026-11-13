@@ -1291,7 +1291,9 @@ class GHGModel:
 
             group_vertices = vertices[used]
             group_faces = remap[group_faces]
-            group_uvs = uvs[used] if len(uvs) == len(vertices) else None
+            group_uvs = uvs[used].copy() if len(uvs) == len(vertices) else None
+            if group_uvs is not None:
+                group_uvs[:, 1] = 1.0 - group_uvs[:, 1]
 
             mesh = trimesh.Trimesh(
                 vertices=group_vertices,

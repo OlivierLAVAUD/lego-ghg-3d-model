@@ -47,6 +47,8 @@ Le parseur lit d'abord la chaine lineaire, puis complete avec les tags connus tr
 - Le chunk `TREF` est vide dans les fichiers PC etudies ; le parseur l'ignore dans ce cas.
 - L'export GLB cree un `PBRMaterial` par materiau avec `baseColorTexture`, la couleur diffuse
   MS00 et `alphaMode = BLEND` lorsque la texture contient de la transparence.
+- trimesh inverse l'axe V lors de l'export glTF : les UV sont pre-flippes avant
+  `TextureVisuals` pour conserver l'orientation des textures DDS dans le GLB.
 
 ## 3. Section geometrie
 

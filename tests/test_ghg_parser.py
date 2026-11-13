@@ -15,11 +15,29 @@ def load(name):
     return GHGModel(os.path.join(ROOT, name))
 
 
-def read_glb_json(path):
+def read_glb(path):
     with open(path, "rb") as handle:
         data = handle.read()
     json_length, _ = struct.unpack_from("<II", data, 12)
-    return json.loads(data[20:20 + json_length].decode("utf-8"))
+    gltf = json.loads(data[20:20 + json_length].decode("utf-8"))
+    bin_header = 20 + json_length
+    bin_length, _ = struct.unpack_from("<II", data, bin_header)
+    binary = data[bin_header + 8:bin_header + 8 + bin_length]
+    return gltf, binary
+
+
+def read_glb_json(path):
+    return read_glb(path)[0]
+
+
+def read_vec2_accessor(gltf, binary, accessor_index):
+    accessor = gltf["accessors"][accessor_index]
+    view = gltf["bufferViews"][accessor["bufferView"]]
+    offset = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
+    count = accessor["count"]
+    return np.frombuffer(
+        binary, dtype="<f4", count=count * 2, offset=offset
+    ).reshape(-1, 2)
 
 
 class ParserSamplesTest(unittest.TestCase):
@@ -226,6 +244,26 @@ class ParserSamplesTest(unittest.TestCase):
                 for primitive in mesh["primitives"]:
                     self.assertIn("TEXCOORD_0", primitive["attributes"])
                     self.assertIn("material", primitive)
+
+    def test_glb_uv_orientation(self):
+        model = load("indianajones_dj_pc.ghg")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "indy.glb")
+            model.export_glb(path)
+
+            gltf, binary = read_glb(path)
+            mesh = next(
+                mesh for mesh in gltf["meshes"] if mesh.get("name") == "material_00"
+            )
+            accessor = mesh["primitives"][0]["attributes"]["TEXCOORD_0"]
+            exported_uvs = read_vec2_accessor(gltf, binary, accessor)
+
+            face_indices = np.where(model._export_face_materials == 0)[0]
+            used = np.unique(model._export_faces[face_indices])
+            source_uvs = model._export_uvs[used]
+
+            self.assertTrue(np.allclose(exported_uvs.min(0), source_uvs.min(0), atol=1e-5))
+            self.assertTrue(np.allclose(exported_uvs.max(0), source_uvs.max(0), atol=1e-5))
 
     def test_biplane_textured_glb_export(self):
         model = load("biplane_pc.ghg")
