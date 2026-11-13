@@ -29,12 +29,17 @@ DRAW_RECORD_SIZE = 0x38
 VERTEX_LAYOUTS = {
     28: {"pos": 0, "normal": 12, "tangent": 16, "uv": 20},
     32: {"pos": 0, "normal": 12, "tangent": 16, "uv": 24},
-    36: {"pos": 0, "normal": 12, "tangent": 16, "uv": 28},
+    36: {"pos": 0, "normal": 12, "tangent": 16, "uv": 20},
     40: {"pos": 0, "normal": 12, "tangent": 16, "uv": 24},
     44: {"pos": 0, "normal": 12, "tangent": 16, "uv": 28},
 }
 
 DXT_BLOCK_BYTES = {b"DXT1": 8, b"DXT5": 16}
+
+MATERIAL_START = 8
+MATERIAL_RECORD_SIZE = 0x2C4
+MATERIAL_TEXTURE_OFFSET = 0x74
+TEXTURE_DESC_SIZE = 0x80
 
 
 class GHGModel:
@@ -77,8 +82,11 @@ class GHGModel:
         self.warnings = []
         self.stats = {}
         self.texture_refs = {}
+        self.materials = []
         self.skeleton_bones = []
         self.skeleton_parts = []
+        self.skeleton_part_materials = []
+        self.face_materials = np.empty((0,), dtype=np.int32)
 
         self._parse()
 
@@ -171,40 +179,56 @@ class GHGModel:
         self.ntbl_strings = names
 
     def _extract_textures(self):
-        """Extraire les noms de textures depuis NTBL/TREF et decoder les DDS embarques."""
+        """Lire les descriptions TST0 puis decoder les blocs DDS embarques."""
         self.textures = []
-        for chunk in self.chunks:
-            if chunk["tag"] == b"NTBL":
-                try:
-                    text_data = self.data[chunk["data_offset"]:chunk["offset"] + chunk["size"]]
-                    num_textures = len(text_data) // 4
-                    for i in range(num_textures):
-                        offset = struct.unpack_from("<I", text_data, i * 4)[0]
-                        if 0 < offset < len(self.data) - 4:
-                            end = self.data.index(0, offset) if 0 in self.data[offset:] else len(self.data)
-                            name = self.data[offset:end].decode("latin1", errors="ignore").rstrip("\x00")
-                            if name and name not in [t["name"] for t in self.textures]:
-                                self.textures.append({"index": len(self.textures), "name": name, "image": None,
-                                                      "width": 0, "height": 0, "format": "DDS"})
-                except (struct.error, ValueError, IndexError):
-                    pass
-            elif chunk["tag"] == b"TREF":
-                try:
-                    text_data = self.data[chunk["data_offset"]:chunk["offset"] + chunk["size"]]
-                    num_textures = len(text_data) // 4
-                    for i in range(num_textures):
-                        offset = struct.unpack_from("<I", text_data, i * 4)[0]
-                        if 0 < offset < len(self.data) - 4:
-                            end = self.data.index(0, offset) if 0 in self.data[offset:] else len(self.data)
-                            name = self.data[offset:end].decode("latin1", errors="ignore").rstrip("\x00")
-                            if name and name not in [t["name"] for t in self.textures]:
-                                self.textures.append({"index": len(self.textures), "name": name, "image": None,
-                                                      "width": 0, "height": 0, "format": "DDS"})
-                except (struct.error, ValueError, IndexError):
-                    pass
+        for index, descriptor in enumerate(self._parse_tst0()):
+            self.textures.append({
+                "index": index,
+                "name": f"texture_{index}",
+                "image": None,
+                "width": descriptor["width"],
+                "height": descriptor["height"],
+                "format": descriptor["format"],
+            })
 
         self._decode_embedded_dds()
         self.apply_texture_mapping()
+
+    def _parse_tst0(self):
+        """Lire les descriptions de textures du chunk TST0 (0x80 octets chacune)."""
+        chunk = self._find_chunk("TST0")
+        if chunk is None:
+            return []
+
+        raw = self.data[chunk["data_offset"]:chunk["offset"] + chunk["size"]]
+        descriptors = []
+        offset = 0
+        while offset + TEXTURE_DESC_SIZE <= len(raw):
+            try:
+                width, height = struct.unpack_from("<II", raw, offset)
+                format_code = struct.unpack_from("<I", raw, offset + 0x38)[0]
+                mip_count = struct.unpack_from("<I", raw, offset + 0x40)[0]
+                data_size = struct.unpack_from("<I", raw, offset + 0x44)[0]
+            except struct.error:
+                break
+
+            if width == 0 or height == 0 or width > 8192 or height > 8192:
+                break
+            if width & (width - 1) or height & (height - 1):
+                break
+            if format_code not in (1, 6):
+                break
+
+            descriptors.append({
+                "width": width,
+                "height": height,
+                "format": "DXT1" if format_code == 1 else "DXT5",
+                "mip_count": mip_count,
+                "data_size": data_size,
+            })
+            offset += TEXTURE_DESC_SIZE
+
+        return descriptors
 
     def _decode_embedded_dds(self):
         """Cherche et decode les blocs DDS (DXT1/DXT5) embarques dans le fichier."""
@@ -338,11 +362,11 @@ class GHGModel:
                         ]
                     alphas = [alpha0, alpha1]
                     if alpha0 > alpha1:
-                        for i in range(6):
+                        for i in range(1, 7):
                             alphas.append(((7 - i) * alpha0 + i * alpha1) // 7)
                     else:
-                        for i in range(6):
-                            alphas.append(((6 - i) * alpha0 + i * alpha1) // 6)
+                        for i in range(1, 5):
+                            alphas.append(((5 - i) * alpha0 + i * alpha1) // 5)
                         alphas.append(0)
                         alphas.append(255)
                     for py in range(4):
@@ -363,6 +387,8 @@ class GHGModel:
         if chunk is None:
             return {}
         raw = self.data[chunk["data_offset"]:chunk["offset"] + chunk["size"]]
+        if not any(raw):
+            return {}
         refs = {}
         pos = 0
         while pos + 8 <= len(raw):
@@ -375,42 +401,81 @@ class GHGModel:
         return refs
 
     def _parse_ms00(self):
-        """Parse le chunk MS00 (proprietes materiel) et retourne une liste de
-        dictionnaires par materiau trouve."""
+        """Lire les materiaux MS00 (count u32, puis records de 0x2C4 octets).
+
+        Chaque record contient un identifiant a +0x38, une couleur diffuse
+        RGBA a +0x54 et un index de texture signe a +0x74.
+        """
         chunk = self._find_chunk("MS00")
         if chunk is None:
             return []
+
         raw = self.data[chunk["data_offset"]:chunk["offset"] + chunk["size"]]
+        if len(raw) < MATERIAL_START + 4:
+            return []
+
+        count = struct.unpack_from("<I", raw, 0)[0]
+        if not (0 < count <= 4096):
+            return []
+
+        stride = MATERIAL_RECORD_SIZE
+        if MATERIAL_START + count * stride > len(raw):
+            inferred = (len(raw) - MATERIAL_START) // count
+            if inferred < MATERIAL_TEXTURE_OFFSET + 2:
+                return []
+            stride = inferred
+
         materials = []
-        pos = 0
-        while pos + 12 <= len(raw):
-            count = struct.unpack_from("<I", raw, pos)[0]
-            pos += 4
-            if count == 0:
+        for index in range(count):
+            base = MATERIAL_START + index * stride
+            if base + MATERIAL_TEXTURE_OFFSET + 2 > len(raw):
                 break
-            end = min(pos + count * 12, len(raw))
-            entries = []
-            p2 = pos
-            while p2 + 12 <= end:
-                flag = struct.unpack_from("<I", raw, p2)[0]
-                flags = struct.unpack_from("<I", raw, p2 + 4)[0]
-                index = struct.unpack_from("<I", raw, p2 + 8)[0]
-                entries.append({"flag": flag, "flags": flags, "index": index})
-                p2 += 12
-            materials.append(entries)
-            pos = end
+            try:
+                material_id = struct.unpack_from("<I", raw, base + 0x38)[0]
+                diffuse = struct.unpack_from("<4f", raw, base + 0x54)
+                texture_id = struct.unpack_from("<h", raw, base + MATERIAL_TEXTURE_OFFSET)[0]
+                texture_id_2 = struct.unpack_from("<h", raw, base + MATERIAL_TEXTURE_OFFSET + 2)[0]
+            except struct.error:
+                break
+
+            materials.append({
+                "index": index,
+                "id": material_id,
+                "diffuse": tuple(float(value) for value in diffuse),
+                "texture": texture_id,
+                "texture_2": texture_id_2,
+            })
+
         return materials
 
-    def apply_texture_mapping(self):
-        """Construit le mapping associe a chaque draw sa texture (si disponible).
+    def _material_for_index(self, index):
+        """Retourner le materiau correspondant a un index GSNH/MS00."""
+        if index is None or index < 0:
+            return None
+        if index < len(self.materials) and self.materials[index].get("id", -1) == index:
+            return self.materials[index]
+        for material in self.materials:
+            if material.get("id") == index:
+                return material
+        if index < len(self.materials):
+            return self.materials[index]
+        return None
 
-        Retourne un dict {draw_index: [texture_index]} stocke dans
-        self.texture_refs, et un dictionnaire de materiaux.
+    def apply_texture_mapping(self):
+        """Construire le mapping materiaux -> textures.
+
+        Le chunk TREF des fichiers PC etudies est vide ; le mapping reel vient
+        des materiaux MS00 et de la table GSNH (os -> parties -> materiaux).
         """
         tref = self._parse_tref()
-        ms00 = self._parse_ms00()
+        materials = self._parse_ms00()
+        for material in materials:
+            texture_id = material.get("texture", -1)
+            if texture_id < 0 or texture_id >= len(self.textures):
+                material["texture"] = -1
         self.texture_refs = tref
-        return tref, ms00
+        self.materials = materials
+        return tref, materials
 
     def _parse_gsnh(self):
         """Parse le chunk GSNH (nom du squelette/character name)."""
@@ -486,7 +551,7 @@ class GHGModel:
             self.warnings.append("Section geometrie invalide.")
             return
 
-        parts, bone_names, bone_world = self._parse_gsnh_parts()
+        parts, bone_names, bone_world, part_materials = self._parse_gsnh_parts()
         self.vertex_buffers = vertex_buffers
         draw_run = self._read_draw_records(len(indices), expected_parts=len(parts))
         if not draw_run:
@@ -502,10 +567,13 @@ class GHGModel:
             parts = []
         self.skeleton_bones = bone_names
         self.skeleton_parts = parts
+        self.skeleton_part_materials = part_materials
+        self.face_materials = np.empty((0,), dtype=np.int32)
 
         vertices = []
         faces = []
         uvs = []
+        face_materials = []
         offset = 0
         cache = {}
 
@@ -541,9 +609,20 @@ class GHGModel:
             if len(triangles) == 0:
                 continue
 
+            material_index = (
+                part_materials[part_index]
+                if part_index < len(part_materials)
+                else -1
+            )
+            material = self._material_for_index(material_index)
+            texture_index = material.get("texture", -1) if material else -1
+
             vertices.append(sub_pos)
             uvs.append(sub_uvs)
             faces.append(triangles + offset)
+            face_materials.append(
+                np.full(len(triangles), material_index, dtype=np.int32)
+            )
             offset += len(sub_pos)
 
             dot = self._normal_agreement(sub_pos, sub_normals, triangles)
@@ -558,6 +637,8 @@ class GHGModel:
                 "stored_normal_dot": round(float(dot), 4),
                 "bone": bone,
                 "bone_name": bone_names[bone] if 0 <= bone < len(bone_names) else None,
+                "material": material_index,
+                "texture": texture_index,
             })
 
         if not vertices:
@@ -567,8 +648,11 @@ class GHGModel:
         all_vertices = np.vstack(vertices)
         all_faces = np.vstack(faces)
         all_uvs = np.vstack(uvs)
+        all_face_materials = np.concatenate(face_materials).astype(np.int32)
 
-        all_faces = self._dedupe_faces(all_vertices, all_faces)
+        unique_faces = self._dedupe_face_indices(all_vertices, all_faces)
+        all_faces = all_faces[unique_faces]
+        all_face_materials = all_face_materials[unique_faces]
 
         self.vertices = all_vertices
         self.faces = all_faces
@@ -580,6 +664,11 @@ class GHGModel:
         remap[used] = np.arange(len(used))
         self.faces = remap[all_faces]
         self.uvs = all_uvs[used]
+        self.face_materials = all_face_materials
+        self._export_vertices = self.vertices
+        self._export_faces = self.faces
+        self._export_uvs = self.uvs
+        self._export_face_materials = self.face_materials
 
         try:
             self.mesh = trimesh.Trimesh(
@@ -596,11 +685,11 @@ class GHGModel:
         """Lire le squelette GSNH et la table layer -> os -> parties.
 
         Les pointeurs sont des offsets signes relatifs au champ qui les contient.
-        Retourne (part_bones, bone_names, bone_world).
+        Retourne (part_bones, bone_names, bone_world, part_materials).
         """
         chunk = self._find_chunk("GSNH")
         if chunk is None:
-            return [], [], []
+            return [], [], [], []
 
         data = self.data
         g = chunk["offset"]
@@ -637,14 +726,14 @@ class GHGModel:
             p += 4
             layers_off = p + i32(p)
         except struct.error:
-            return [], [], []
+            return [], [], [], []
 
         if not (0 < number_bones <= 1024 and 0 <= number_layers <= 256):
-            return [], [], []
+            return [], [], [], []
         if not (0 <= bones_off < len(data) and 0 <= bones2_off < len(data)):
-            return [], [], []
+            return [], [], [], []
         if not (0 <= layers_off < len(data)):
-            return [], [], []
+            return [], [], [], []
 
         names = []
         parents = []
@@ -660,7 +749,7 @@ class GHGModel:
                 parents.append(struct.unpack_from("<b", data, name_field + 4)[0])
             local = [f32_matrix(bones2_off + i * 0x40) for i in range(number_bones)]
         except struct.error:
-            return [], [], []
+            return [], [], [], []
 
         world = [None] * number_bones
 
@@ -677,23 +766,35 @@ class GHGModel:
         for i in range(number_bones):
             resolve(i, set())
 
-        def read_pair(pair, default_bone):
+        def read_pair(pair):
             if not (0 <= pair <= len(data) - 0x10):
-                return 0
+                return 0, []
             matrix_field = pair + 8
             matrix_target = matrix_field + i32(matrix_field)
             if not (0 <= matrix_target <= len(data) - 0xC0):
-                return 0
+                return 0, []
             parts_field = matrix_target + 0xB0
             parts_target = parts_field + i32(parts_field)
             if not (0 <= parts_target <= len(data) - 4):
-                return 0
+                return 0, []
             count = i32(parts_target)
             if count <= 0 or count > 100_000:
-                return 0
-            return count
+                return 0, []
+
+            materials = []
+            materials_field = parts_target + 4
+            if 0 <= materials_field <= len(data) - 4:
+                materials_target = materials_field + i32(materials_field)
+                if 0 <= materials_target <= len(data) - count * 4:
+                    materials = [
+                        i32(materials_target + index * 4)
+                        for index in range(count)
+                    ]
+                    materials.reverse()
+            return count, materials
 
         parts = []
+        part_materials = []
         try:
             for layer in range(number_layers):
                 base = layers_off + layer * 20
@@ -716,17 +817,25 @@ class GHGModel:
                             value = i32(field)
                             if value == 0:
                                 continue
-                            count = read_pair(field + value, bone)
+                            count, materials = read_pair(field + value)
                             if count:
                                 parts.extend([bone] * count)
+                                if len(materials) == count:
+                                    part_materials.extend(materials)
+                                else:
+                                    part_materials.extend([-1] * count)
                     else:
-                        count = read_pair(pointers[slot], -1)
+                        count, materials = read_pair(pointers[slot])
                         if count:
                             parts.extend([-1] * count)
+                            if len(materials) == count:
+                                part_materials.extend(materials)
+                            else:
+                                part_materials.extend([-1] * count)
         except struct.error:
-            return [], [], []
+            return [], [], [], []
 
-        return parts, names, world
+        return parts, names, world, part_materials
 
     def _read_draw_records(self, index_total, expected_parts=None):
         """Retrouver les enregistrements DISP valides (0x38 octets).
@@ -914,15 +1023,19 @@ class GHGModel:
         return float(np.clip((face * vertex).sum(axis=1), -1.0, 1.0).mean())
 
     @staticmethod
-    def _dedupe_faces(vertices, faces):
+    def _dedupe_face_indices(vertices, faces):
         if len(faces) == 0:
-            return faces
+            return np.empty((0,), dtype=np.int64)
         keys = np.round(vertices[faces], 4)
         order = np.lexsort((keys[:, :, 2], keys[:, :, 1], keys[:, :, 0]), axis=1)
         keys = np.take_along_axis(keys, order[:, :, None], axis=1)
         packed = np.ascontiguousarray(keys).view(np.uint8).reshape(len(faces), 36)
         _, unique = np.unique(packed, axis=0, return_index=True)
-        return faces[np.sort(unique)]
+        return np.sort(unique)
+
+    @staticmethod
+    def _dedupe_faces(vertices, faces):
+        return faces[GHGModel._dedupe_face_indices(vertices, faces)]
 
     def _find_geometry_section(self):
         """Trouver la section geometrie en fin de fichier.
@@ -1120,12 +1233,94 @@ class GHGModel:
         if len(self.uvs) > 0 and len(self.uvs) == len(self.vertices):
             self.mesh.visual = trimesh.visual.TextureVisuals(uv=self.uvs)
 
+    def _make_material(self, material_index):
+        material_info = self._material_for_index(material_index)
+        texture_index = material_info.get("texture", -1) if material_info else -1
+        image = None
+        if 0 <= texture_index < len(self.textures):
+            image = self.textures[texture_index].get("image")
+
+        diffuse = material_info.get("diffuse", (1.0, 1.0, 1.0, 1.0)) if material_info else (1.0, 1.0, 1.0, 1.0)
+        color = [float(np.clip(channel, 0.0, 1.0)) for channel in diffuse[:3]]
+        alpha = float(diffuse[3]) if len(diffuse) > 3 else 1.0
+        if alpha <= 0.0:
+            alpha = 1.0
+
+        alpha_mode = "OPAQUE"
+        if image is not None:
+            alpha_extrema = image.getchannel("A").getextrema()
+            if alpha_extrema[0] < 255:
+                alpha_mode = "BLEND"
+
+        name = f"mat_{material_index:02d}" if material_index >= 0 else "untextured"
+        if texture_index >= 0:
+            name += f"_tex_{texture_index:02d}"
+        return trimesh.visual.material.PBRMaterial(
+            name=name,
+            baseColorFactor=color + [alpha],
+            baseColorTexture=image,
+            metallicFactor=0.0,
+            roughnessFactor=0.8,
+            alphaMode=alpha_mode,
+            doubleSided=True,
+        )
+
+    def _build_textured_scene(self):
+        """Construire une scene trimesh avec un materiau par groupe de faces."""
+        vertices = getattr(self, "_export_vertices", self.vertices)
+        faces = getattr(self, "_export_faces", self.faces)
+        uvs = getattr(self, "_export_uvs", self.uvs)
+        face_materials = getattr(self, "_export_face_materials", self.face_materials)
+
+        if len(faces) == 0 or len(face_materials) != len(faces):
+            return None
+        if len(vertices) == 0:
+            return None
+
+        groups = {}
+        for face_index, material_index in enumerate(face_materials):
+            groups.setdefault(int(material_index), []).append(face_index)
+
+        scene = trimesh.Scene()
+        for material_index in sorted(groups):
+            face_indices = np.asarray(groups[material_index], dtype=np.int64)
+            group_faces = faces[face_indices]
+            used = np.unique(group_faces)
+            remap = np.full(len(vertices), -1, dtype=np.int64)
+            remap[used] = np.arange(len(used))
+
+            group_vertices = vertices[used]
+            group_faces = remap[group_faces]
+            group_uvs = uvs[used] if len(uvs) == len(vertices) else None
+
+            mesh = trimesh.Trimesh(
+                vertices=group_vertices,
+                faces=group_faces,
+                process=False,
+            )
+            material = self._make_material(material_index)
+            if group_uvs is not None:
+                mesh.visual = trimesh.visual.TextureVisuals(
+                    uv=group_uvs, material=material
+                )
+            else:
+                mesh.visual = trimesh.visual.TextureVisuals(material=material)
+
+            name = f"material_{material_index:02d}" if material_index >= 0 else "untextured"
+            scene.add_geometry(mesh, node_name=name, geom_name=name)
+
+        return scene
+
     def export_glb(self, path):
-        """Exporter le modele au format GLB (glTF 2.0 binaire)."""
+        """Exporter le modele au format GLB (glTF 2.0 binaire), textures incluses."""
         self._build_mesh()
         if self.mesh is None:
             raise ValueError("Aucun maillage a exporter.")
-        self.mesh.export(path)
+        scene = self._build_textured_scene()
+        if scene is not None and len(scene.geometry) > 0:
+            scene.export(path)
+        else:
+            self.mesh.export(path)
 
     def export_obj(self, path):
         """Exporter le modele au format OBJ."""

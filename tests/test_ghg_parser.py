@@ -1,4 +1,6 @@
+import json
 import os
+import struct
 import tempfile
 import unittest
 
@@ -11,6 +13,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def load(name):
     return GHGModel(os.path.join(ROOT, name))
+
+
+def read_glb_json(path):
+    with open(path, "rb") as handle:
+        data = handle.read()
+    json_length, _ = struct.unpack_from("<II", data, 12)
+    return json.loads(data[20:20 + json_length].decode("utf-8"))
 
 
 class ParserSamplesTest(unittest.TestCase):
@@ -135,6 +144,41 @@ class ParserSamplesTest(unittest.TestCase):
         self.assertIn("Head", {draw["bone_name"] for draw in indy.draws})
         self.assertGreater(indy.stats["bounds"][1][1], 0.4)
 
+    def test_material_texture_mapping(self):
+        scooter = load("scooter_pc.ghg")
+        self.assertEqual(len(scooter.materials), 6)
+        self.assertEqual(
+            [material["texture"] for material in scooter.materials],
+            [-1, -1, -1, -1, -1, -1],
+        )
+
+        biplane = load("biplane_pc.ghg")
+        self.assertEqual(len(biplane.materials), 21)
+        self.assertEqual(
+            [material["texture"] for material in biplane.materials],
+            [-1, -1, 1, -1, -1, -1, -1, 4, -1, 6, 8, -1, 10, -1, 12, 13, 15, -1, -1, 17, -1],
+        )
+        self.assertEqual(len(biplane.skeleton_part_materials), 48)
+        self.assertEqual(
+            sorted(set(biplane.face_materials.tolist())),
+            list(range(21)),
+        )
+
+        indy = load("indianajones_dj_pc.ghg")
+        self.assertEqual(len(indy.materials), 7)
+        self.assertEqual(
+            [material["texture"] for material in indy.materials],
+            [0, 0, 0, 0, 0, 2, 3],
+        )
+        self.assertEqual(sorted(set(indy.face_materials.tolist())), list(range(7)))
+        self.assertEqual(sorted(set(draw["texture"] for draw in indy.draws)), [0, 2, 3])
+
+    def test_uvs_are_valid(self):
+        for name in ("scooter_pc.ghg", "biplane_pc.ghg", "indianajones_dj_pc.ghg"):
+            model = load(name)
+            self.assertTrue(np.isfinite(model.uvs).all(), name)
+            self.assertLess(float(np.abs(model.uvs).max()), 2.0, name)
+
     def test_invalid_signature(self):
         with self.assertRaises(ValueError):
             GHGModel(b"not a ghg file")
@@ -146,6 +190,54 @@ class ParserSamplesTest(unittest.TestCase):
             model.export_glb(path)
             self.assertTrue(os.path.exists(path))
             self.assertGreater(os.path.getsize(path), 1000)
+
+            gltf = read_glb_json(path)
+            self.assertEqual(len(gltf["materials"]), 6)
+            self.assertNotIn("images", gltf)
+            self.assertNotIn("textures", gltf)
+
+    def test_textured_glb_export(self):
+        model = load("indianajones_dj_pc.ghg")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "indy.glb")
+            model.export_glb(path)
+
+            gltf = read_glb_json(path)
+            self.assertEqual(len(gltf["materials"]), 7)
+            expected_images = len(
+                {material["texture"] for material in model.materials if material["texture"] >= 0}
+            )
+            self.assertEqual(
+                len({image["bufferView"] for image in gltf["images"]}),
+                expected_images,
+            )
+            self.assertEqual(len(gltf["textures"]), len(gltf["images"]))
+
+            textured = [
+                material for material in gltf["materials"]
+                if "baseColorTexture" in material.get("pbrMetallicRoughness", {})
+            ]
+            self.assertEqual(len(textured), 7)
+            self.assertEqual(gltf["materials"][0].get("alphaMode"), "OPAQUE")
+            self.assertEqual(gltf["materials"][5].get("alphaMode"), "BLEND")
+            self.assertEqual(gltf["materials"][6].get("alphaMode"), "BLEND")
+
+            for mesh in gltf["meshes"]:
+                for primitive in mesh["primitives"]:
+                    self.assertIn("TEXCOORD_0", primitive["attributes"])
+                    self.assertIn("material", primitive)
+
+    def test_biplane_textured_glb_export(self):
+        model = load("biplane_pc.ghg")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "biplane.glb")
+            model.export_glb(path)
+
+            gltf = read_glb_json(path)
+            self.assertEqual(len(gltf["materials"]), 21)
+            expected_images = len({m["texture"] for m in model.materials if m["texture"] >= 0})
+            self.assertEqual(len(gltf["images"]), expected_images)
+            self.assertEqual(len(gltf["textures"]), expected_images)
 
 
 if __name__ == "__main__":

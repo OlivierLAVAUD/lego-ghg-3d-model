@@ -15,6 +15,7 @@ des jeux LEGO developpes par TT Games (LEGO Indiana Jones, LEGO Star Wars, LEGO 
 - Chargement des modeles inclus ou import d'un fichier `.ghg` / `.bin`.
 - Extraction des textures DDS (DXT1/DXT5) en PNG et export ZIP.
 - Export des maillages en `.glb` (glTF 2.0 binaire) et `.obj`.
+- GLB textures : materiaux MS00, couleurs diffuses, UVs, alpha et images DDS integrees.
 - Inspection des chunks binaires, des noms NTBL et des sous-maillages (draws).
 - Reconstruction des sous-maillages a partir des enregistrements DISP et des vertex/index buffers.
 
@@ -41,8 +42,8 @@ uv run ghg-explorer
 uv run python -m unittest discover -s tests -v
 ```
 
-Les tests verifient les statistiques, les bornes, la coherence des normales et l'export GLB des
-trois echantillons du depot.
+Les tests verifient les statistiques, les bornes, la coherence des normales, le mapping
+materiau/texture et l'export GLB texture des trois echantillons du depot.
 
 ## Format NU20 / GHG (resume)
 
@@ -63,11 +64,14 @@ trois echantillons du depot.
 - Les faces sont des **triangle strips** : alternance du winding et suppression des degeneres.
 - Le biplan contient deux copies identiques de son maillage dans le meme vertex buffer ; les faces
   dupliquees sont supprimees par comparaison des positions arrondies.
+- `TST0` decrit les textures (largeur, hauteur, format DXT, taille des donnees).
+- `MS00` contient les materiaux : identifiant, couleur diffuse RGBA et index de texture signe
+  (`-1` = pas de texture).
+- `GSNH` associe les layers aux os et aux parties, puis chaque partie a un materiau ; la table des
+  materiaux est inversee pour retrouver l'ordre des draws.
 
 ## Limites connues
 
-- Les textures sont extraites, mais le mapping texture/materiau par draw n'est pas encore applique :
-  les GLB exportes ne sont pas textures.
 - Les transforms de bind du squelette GSNH sont appliquees (helice, roues, tete, bras).
   Les animations ne sont pas encore lues.
 - Les variantes console big-endian (`_gc.ghg`, `_x360.ghg`, etc.) ne sont pas prises en charge.

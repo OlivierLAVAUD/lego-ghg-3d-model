@@ -30,6 +30,24 @@ Le parseur lit d'abord la chaine lineaire, puis complete avec les tags connus tr
   eviter de detecter de faux `DDS ` dans les donnees compressees.
 - Les textures sont converties en PNG via Pillow et exportees dans un ZIP.
 
+## 2bis. Textures et materiaux
+
+- `TST0` contient une table de descripteurs de `0x80` octets :
+  - `+0x00` largeur, `+0x04` hauteur ;
+  - `+0x38` format (`1` = DXT1, `6` = DXT5) ;
+  - `+0x40` nombre de mipmaps, `+0x44` taille des donnees.
+- `MS00` commence par `u32 materialCount` ; les records font `0x2C4` octets et commencent a
+  l'offset `8` :
+  - `+0x38` identifiant du materiau ;
+  - `+0x54` couleur diffuse RGBA (4 floats) ;
+  - `+0x74` index de texture signe (`-1` = aucune texture), suivi d'un second index.
+- `GSNH` associe les layers aux os et aux parties. Apres le nombre de parties, un pointeur mene
+  a la table des index de materiaux ; cette table est **inversee** pour retrouver l'ordre des
+  draws.
+- Le chunk `TREF` est vide dans les fichiers PC etudies ; le parseur l'ignore dans ce cas.
+- L'export GLB cree un `PBRMaterial` par materiau avec `baseColorTexture`, la couleur diffuse
+  MS00 et `alphaMode = BLEND` lorsque la texture contient de la transparence.
+
 ## 3. Section geometrie
 
 La geometrie est stockee **en fin de fichier**, apres la derniere texture DDS et les chunks
@@ -55,15 +73,17 @@ Chaque vertex buffer est une suite de sommets de stride variable. Layout observe
 |-------:|---------:|--------:|---------:|----:|
 | 28 | 0 | 12 | 16 | 20 |
 | 32 | 0 | 12 | 16 | 24 |
-| 36 | 0 | 12 | 16 | 28 |
+| 36 | 0 | 12 | 16 | 20 |
 | 40 | 0 | 12 | 16 | 24 |
 | 44 | 0 | 12 | 16 | 28 |
 
 - Position : `float32[3]`.
 - Normale : 4 octets signes, decodes par `b / 127.5 - 1.0` ; les 3 premiers octets sont utilises.
 - UV : `float32[2]`.
+- Le stride 36 ajoute 8 octets apres les UV (couleurs de sommets), sans deplacer les UV.
 
-Les offsets UV proviennent du script Noesis et ont ete verifies sur les echantillons.
+Les offsets UV ont ete verifies sur les echantillons ; ceux du stride 36 sont en `20` (et non
+`28`, qui contient les couleurs).
 
 ## 5. Enregistrements DISP
 
@@ -118,6 +138,8 @@ Le chunk `GSNH` decrit un petit squelette et une table de parties :
 - table 3 : matrices inverses de bind (non utilisees pour l'export) ;
 - layers : jusqu'a quatre tables (`p1`..`p4`) ; chaque entree associe un os a un nombre de
   parties. L'ordre des parties suit celui des records `DISP`.
+- chaque partie possede un index de materiau dans une table dediee ; elle est inversee pour
+  correspondre a l'ordre des draws.
 
 Les sommets de chaque partie sont exprimes dans l'espace local de l'os : le parseur applique
 `world` aux positions et la rotation 3x3 aux normales avant la deduplication. Les parties
@@ -169,9 +191,13 @@ parasite est ignore car le total ne correspond pas aux 8 parties GSNH.
   - `_read_chunks()` : chaine + tags isoles + profondeur ;
   - `_extract_ntbl()` : chaine NTBL, avec saut du compteur u32 initial ;
   - `_extract_textures()` : DDS -> PNG ;
-  - `_extract_geometry()` : section EOF, vertex buffers, records DISP, strips, dedup ;
-  - `_parse_gsnh_parts()` : os, matrices de bind et mapping os -> parties ;
+  - `_parse_tst0()` : descripteurs de textures ;
+  - `_parse_ms00()` : materiaux, couleurs diffuses et index de textures ;
+  - `_extract_geometry()` : section EOF, vertex buffers, records DISP, strips, dedup,
+    materiaux par face ;
+  - `_parse_gsnh_parts()` : os, matrices de bind, mapping os -> parties -> materiaux ;
   - `_read_draw_records()` : detection du run DISP et des records isoles ;
+  - `_build_textured_scene()` : un `trimesh.Trimesh` par materiau avec UVs et texture ;
   - `_build_stats()` : statistiques pour l'UI ;
   - `export_glb()`, `export_obj()`, `export_textures_zip()`.
 - `app.py` : interface Gradio, tableaux chunks/draws, galerie de textures, exports.
@@ -179,7 +205,6 @@ parasite est ignore car le total ne correspond pas aux 8 parties GSNH.
 
 ## 9. Limites et pistes
 
-- Mapping texture/materiau par draw non resolu : les GLB sont exportes sans textures.
 - Les transforms de bones sont appliquees pour la pose de bind ; les animations ne sont pas lues.
 - Les variantes console big-endian ne sont pas supportees.
 - Le seul mapping VB/IB connu est celui des echantillons ; les fichiers avec plusieurs index
